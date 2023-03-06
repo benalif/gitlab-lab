@@ -1,0 +1,96 @@
+#define the stages
+stages:
+  - build
+  - test
+  - deploy
+
+#define global variables
+variables:
+  TAG_LATEST: $DOCKERHUB/$CI_COMMIT_REF_NAME:latest
+  TAG_COMMIT: $DOCKERHUB/$CI_COMMIT_REF_NAME:$CI_COMMIT_SHORT_SHA
+  #CI_* variables are predefined Gitlab variables
+
+#define job
+build_job:
+  image: docker:18.09 #the docker image to use
+  stage: build #the stage the job belongs to
+  tags: #tag of the runners
+    - runner1
+  services: #which service to install on top of the container
+    - docker:18.09-dind
+  #docker-in-docker is used to use docker command inside docker container
+  script:
+    - echo $TAG_COMMIT $TAG_LATEST #view what these global variables contain
+    - docker build -t $TAG_COMMIT -t $TAG_LATEST . #build the image with 2 different names
+    - docker login -u $DOCKERHUB -p $DCKPASSWD #login to your dockerhub
+    - docker push $TAG_COMMIT #push the image with name1
+    - docker push $TAG_LATEST #push the image with name2
+
+test_job:
+  image: docker:18.09
+  stage: test
+  tags:
+    - runner1
+  services:
+    - docker:18.09-dind
+  script:
+    - docker pull $TAG_COMMIT
+    - docker run -d -p 8001:8001 --name nginx $TAG_COMMIT
+    - sleep 5
+    - state=$(docker container ls -a --format "{{json .Status}}" | tr -d '"' | awk '{print $1}')
+    - echo $state
+    - |
+      if [[ $state == "Exited" ]]; then 
+        docker logs nginx
+        docker logs nginx > container.log
+        exit 1 
+      fi
+  artifacts:
+    when: on_failure
+    paths:
+      - container.log
+    expire_in: 1 day
+
+deploy_job1:
+  image: alpine:latest
+  stage: deploy
+  tags:
+    - runner1
+  script:
+    - chmod 400 $SSHKEY #change permission of the ssh key
+    - apk update && apk add openssh-client #install openssh-client on alpine
+    # connect to your dockerhub
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u $DOCKERHUB -p $DCKPASSWD"
+    # pull the image with the current commit
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull $TAG_LATEST"
+    # remove old running container if present
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker container rm -f nginx-staging || true"
+    # run the new nginx container
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker run -d -p 8002:8001 --name nginx-staging $TAG_COMMIT"
+  environment: #create an environment on Gitlab
+    name: staging #named production
+    url: https://port-8002-$DOMAIN #with the url to the deployed container
+  except:
+    - main #this job will run on all branches expect main branch
+
+deploy_job2:
+  image: alpine:latest
+  stage: deploy
+  tags:
+    - runner1
+  script:
+    - chmod 400 $SSHKEY #change permission of the ssh key
+    - apk update && apk add openssh-client #install openssh-client on alpine
+    # connect to your dockerhub
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u $DOCKERHUB -p $DCKPASSWD"
+    # pull the image with the current commit
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull $TAG_LATEST"
+    # remove old running container if present
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker container rm -f nginx || true"
+    # run the new nginx container
+    - ssh -i $SSHKEY -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker run -d -p 8001:8001 --name nginx $TAG_COMMIT"
+  environment: #create an environment on Gitlab
+    name: production #named production
+    url: https://port-8001-$DOMAIN #with the url to the deployed container
+  only:
+    - main #this job will run only on branch main

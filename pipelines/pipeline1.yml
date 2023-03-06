@@ -1,0 +1,25 @@
+#define the stages
+stages:
+  - build
+
+#define global variables
+variables:
+  TAG_LATEST: $DOCKERHUB/$CI_COMMIT_REF_NAME:latest
+  TAG_COMMIT: $DOCKERHUB/$CI_COMMIT_REF_NAME:$CI_COMMIT_SHORT_SHA
+  #CI_* variables are predefined Gitlab variables
+
+#define job
+build_job:
+  image: docker:18.09 #the docker image to use
+  stage: build #the stage the job belongs to
+  tags: #tag of the runners
+    - runner1
+  services: #which service to install on top of the container
+    - docker:18.09-dind
+  #docker-in-docker is used to use docker command inside docker container
+  script:
+    - echo $TAG_COMMIT $TAG_LATEST #view what these global variables contain
+    - docker build -t $TAG_COMMIT -t $TAG_LATEST . #build the image with 2 different names
+    - docker login -u $DOCKERHUB -p $DCKPASSWD #login to your dockerhub
+    - docker push $TAG_COMMIT #push the image with name1
+    - docker push $TAG_LATEST #push the image with name2
